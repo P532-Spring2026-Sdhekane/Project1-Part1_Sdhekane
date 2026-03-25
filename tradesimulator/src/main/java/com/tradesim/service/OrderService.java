@@ -5,87 +5,79 @@ import com.tradesim.model.Order;
 import com.tradesim.model.TradeRecord;
 import com.tradesim.observer.PriceObserver;
 import com.tradesim.singleton.Portfolio;
+import com.tradesim.singleton.UserRegistry;
 import org.springframework.stereotype.Service;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
-
 
 @Service
 public class OrderService implements PriceObserver {
 
-    private final Portfolio portfolio;
-    private final DashboardNotifier notifier;
+    private final UserRegistry userRegistry;
 
-    private final List<Order> pendingOrders = new CopyOnWriteArrayList<>();
-    private final List<TradeRecord> tradeHistory = new ArrayList<>();
+    //per-user pending orders and trade history
+    private final Map<String, List<Order>> pendingOrders = new ConcurrentHashMap<>();
+    private final Map<String, List<TradeRecord>> tradeHistory = new ConcurrentHashMap<>();
 
-    public OrderService(Portfolio portfolio, DashboardNotifier notifier,
-                        MarketFeedService marketFeedService) {
-        this.portfolio = portfolio;
-        this.notifier = notifier;
+    public OrderService(UserRegistry userRegistry, MarketFeedService marketFeedService) {
+        this.userRegistry = userRegistry;
         marketFeedService.addObserver(this);
     }
 
-
     @Override
     public synchronized void onPriceUpdate(Map<String, Double> updatedPrices) {
-        List<Order> toRemove = new ArrayList<>();
-        for (Order order : pendingOrders) {
-            double price = updatedPrices.getOrDefault(order.getTicker(), 0.0);
-            if (order.isReadyToExecute(price)) {
-                executeOrder(order, price);
-                toRemove.add(order);
+        for (String userId : userRegistry.getUsers()) {
+            List<Order> pending = getPending(userId);
+            List<Order> toRemove = new ArrayList<>();
+            for (Order order : pending) {
+                double price = updatedPrices.getOrDefault(order.getTicker(), 0.0);
+                if (order.isReadyToExecute(price)) {
+                    executeOrder(userId, order, price);
+                    toRemove.add(order);
+                }
             }
+            pending.removeAll(toRemove);
         }
-        pendingOrders.removeAll(toRemove);
     }
 
-    public synchronized String submitOrder(Order order, double currentPrice) {
+    public synchronized String submitOrder(String userId, Order order, double currentPrice) {
         if (order.isReadyToExecute(currentPrice)) {
-            // Validate before executing
-            String error = validate(order, currentPrice);
-            if (error != null) {
-                order.markRejected();
-                return error;
-            }
-            executeOrder(order, currentPrice);
+            String error = validate(userId, order, currentPrice);
+            if (error != null) { order.markRejected(); return error; }
+            executeOrder(userId, order, currentPrice);
         } else {
-          
-            pendingOrders.add(order);
-        }
-        return null; 
-    }
-
-
-    private String validate(Order order, double price) {
-        double total = price * order.getQuantity();
-        if (order.getSide() == Order.Side.BUY) {
-            if (total > portfolio.getCash()) {
-                return "Insufficient cash: need $" + String.format("%.2f", total)
-                        + " but have $" + String.format("%.2f", portfolio.getCash());
-            }
-        } else {
-            int owned = portfolio.getShares(order.getTicker());
-            if (order.getQuantity() > owned) {
-                return "Insufficient shares: need " + order.getQuantity()
-                        + " of " + order.getTicker() + " but own " + owned;
-            }
+            getPending(userId).add(order);
         }
         return null;
     }
 
-    private void executeOrder(Order order, double price) {
-        String validationError = validate(order, price);
-        if (validationError != null) {
+    private String validate(String userId, Order order, double price) {
+        Portfolio portfolio = userRegistry.getPortfolio(userId);
+        double total = price * order.getQuantity();
+        if (order.getSide() == Order.Side.BUY) {
+            if (total > portfolio.getCash())
+                return "Insufficient cash: need $" + String.format("%.2f", total)
+                        + " but have $" + String.format("%.2f", portfolio.getCash());
+        } else {
+            int owned = portfolio.getShares(order.getTicker());
+            if (order.getQuantity() > owned)
+                return "Insufficient shares: need " + order.getQuantity()
+                        + " of " + order.getTicker() + " but own " + owned;
+        }
+        return null;
+    }
+
+    private void executeOrder(String userId, Order order, double price) {
+        String err = validate(userId, order, price);
+        Portfolio portfolio = userRegistry.getPortfolio(userId);
+        DashboardNotifier notifier = userRegistry.getNotifier(userId);
+        if (err != null) {
             order.markRejected();
-            notifier.send("Order REJECTED for " + order.getTicker() + ": " + validationError);
+            notifier.send("Order REJECTED for " + order.getTicker() + ": " + err);
             return;
         }
-
         double total = price * order.getQuantity();
         if (order.getSide() == Order.Side.BUY) {
             portfolio.deductCash(total);
@@ -94,23 +86,26 @@ public class OrderService implements PriceObserver {
             portfolio.removeShares(order.getTicker(), order.getQuantity());
             portfolio.addCash(total);
         }
-
         order.markExecuted(price);
-
-        TradeRecord record = new TradeRecord(
-                order.getTicker(), order.getSide(), order.getQuantity(), price);
-        tradeHistory.add(record);
-
+        getHistory(userId).add(new TradeRecord(
+                order.getTicker(), order.getSide(), order.getQuantity(), price));
         notifier.send(String.format("Order EXECUTED: %s %d shares of %s at $%.2f (total $%.2f)",
                 order.getSide(), order.getQuantity(), order.getTicker(), price, total));
     }
 
-
-    public List<Order> getPendingOrders() {
-        return Collections.unmodifiableList(pendingOrders);
+    private List<Order> getPending(String userId) {
+        return pendingOrders.computeIfAbsent(userId, k -> new CopyOnWriteArrayList<>());
     }
 
-    public List<TradeRecord> getTradeHistory() {
-        return Collections.unmodifiableList(tradeHistory);
+    private List<TradeRecord> getHistory(String userId) {
+        return tradeHistory.computeIfAbsent(userId, k -> new ArrayList<>());
+    }
+
+    public List<Order> getPendingOrders(String userId) {
+        return Collections.unmodifiableList(getPending(userId));
+    }
+
+    public List<TradeRecord> getTradeHistory(String userId) {
+        return Collections.unmodifiableList(getHistory(userId));
     }
 }

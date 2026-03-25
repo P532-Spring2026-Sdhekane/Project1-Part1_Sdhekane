@@ -16,10 +16,12 @@ public class DashboardNotifier extends NotificationDecorator {
 
     @Override
     public void send(String message) {
-        
         messages.add(message);
-       
         wrapped.send(message);
+    }
+
+    public void updateWrapped(NotificationService newWrapped) {
+        this.wrapped = newWrapped;
     }
 
     public List<String> getMessages() {
