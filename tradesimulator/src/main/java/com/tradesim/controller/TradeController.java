@@ -14,6 +14,7 @@ import java.util.*;
 
 @RestController
 @RequestMapping("/api")
+@CrossOrigin(origins = "*") 
 public class TradeController {
 
     private final MarketFeedService marketFeed;
@@ -29,10 +30,13 @@ public class TradeController {
         this.userRegistry = userRegistry;
     }
 
+
+
     @GetMapping("/users")
     public List<String> getUsers() {
         return new ArrayList<>(userRegistry.getUsers());
     }
+
 
     @GetMapping("/prices")
     public Map<String, Double> getPrices() {
@@ -42,24 +46,29 @@ public class TradeController {
     @GetMapping("/portfolio")
     public Map<String, Object> getPortfolio(
             @RequestParam(defaultValue = "alice") String user) {
-        Portfolio portfolio = userRegistry.getPortfolio(user);
-        Map<String, Object> result = new HashMap<>();
+
+        String normalizedUser = user.toLowerCase().trim();
+        Portfolio portfolio = userRegistry.getPortfolio(normalizedUser);
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("user", normalizedUser);
         result.put("cash", portfolio.getCash());
         result.put("holdings", portfolio.getHoldings());
         result.put("totalValue", portfolio.getTotalValue(marketFeed.getPrices()));
         return result;
     }
 
+
     @PostMapping("/orders/market")
     public ResponseEntity<Map<String, String>> placeMarketOrder(
             @RequestParam(defaultValue = "alice") String user,
             @RequestBody MarketOrderRequest req) {
+        String normalizedUser = user.toLowerCase().trim();
         Order.Side side;
         try { side = Order.Side.valueOf(req.side.toUpperCase()); }
         catch (Exception e) { return badRequest("Invalid side: " + req.side); }
         if (req.quantity <= 0) return badRequest("Quantity must be positive");
         Order order = orderFactory.createMarketOrder(req.ticker, side, req.quantity);
-        String error = orderService.submitOrder(user, order, marketFeed.getPrice(req.ticker));
+        String error = orderService.submitOrder(normalizedUser, order, marketFeed.getPrice(req.ticker));
         if (error != null) return badRequest(error);
         return ResponseEntity.ok(Map.of("status", "executed", "orderId", order.getId()));
     }
@@ -68,13 +77,14 @@ public class TradeController {
     public ResponseEntity<Map<String, String>> placeLimitOrder(
             @RequestParam(defaultValue = "alice") String user,
             @RequestBody LimitOrderRequest req) {
+        String normalizedUser = user.toLowerCase().trim();
         Order.Side side;
         try { side = Order.Side.valueOf(req.side.toUpperCase()); }
         catch (Exception e) { return badRequest("Invalid side: " + req.side); }
         if (req.quantity <= 0)   return badRequest("Quantity must be positive");
         if (req.limitPrice <= 0) return badRequest("Limit price must be positive");
         Order order = orderFactory.createLimitOrder(req.ticker, side, req.quantity, req.limitPrice);
-        String error = orderService.submitOrder(user, order, marketFeed.getPrice(req.ticker));
+        String error = orderService.submitOrder(normalizedUser, order, marketFeed.getPrice(req.ticker));
         if (error != null) return badRequest(error);
         return ResponseEntity.ok(Map.of("status", "pending", "orderId", order.getId()));
     }
@@ -82,8 +92,9 @@ public class TradeController {
     @GetMapping("/orders/pending")
     public List<Map<String, Object>> getPendingOrders(
             @RequestParam(defaultValue = "alice") String user) {
-        return orderService.getPendingOrders(user).stream().map(o -> {
-            Map<String, Object> m = new HashMap<>();
+        String normalizedUser = user.toLowerCase().trim();
+        return orderService.getPendingOrders(normalizedUser).stream().map(o -> {
+            Map<String, Object> m = new LinkedHashMap<>();
             m.put("id", o.getId()); m.put("ticker", o.getTicker());
             m.put("side", o.getSide()); m.put("quantity", o.getQuantity());
             m.put("status", o.getStatus());
@@ -91,11 +102,13 @@ public class TradeController {
         }).toList();
     }
 
+
     @GetMapping("/trades")
     public List<Map<String, Object>> getTradeHistory(
             @RequestParam(defaultValue = "alice") String user) {
-        return orderService.getTradeHistory(user).stream().map(t -> {
-            Map<String, Object> m = new HashMap<>();
+        String normalizedUser = user.toLowerCase().trim();
+        return orderService.getTradeHistory(normalizedUser).stream().map(t -> {
+            Map<String, Object> m = new LinkedHashMap<>();
             m.put("ticker", t.getTicker()); m.put("side", t.getSide());
             m.put("quantity", t.getQuantity()); m.put("price", t.getPrice());
             m.put("totalValue", t.getTotalValue());
@@ -104,13 +117,33 @@ public class TradeController {
         }).toList();
     }
 
+
+
     @GetMapping("/notifications")
     public Map<String, Object> getNotifications(
             @RequestParam(defaultValue = "alice") String user) {
-        DashboardNotifier notifier = userRegistry.getNotifier(user);
+        String normalizedUser = user.toLowerCase().trim();
+        DashboardNotifier notifier = userRegistry.getNotifier(normalizedUser);
         List<String> msgs = List.copyOf(notifier.getMessages());
         notifier.clearMessages();
         return Map.of("messages", msgs);
+    }
+
+    @PostMapping("/reset")
+    public ResponseEntity<Map<String, String>> resetUser(
+            @RequestParam(defaultValue = "alice") String user) {
+        String normalizedUser = user.toLowerCase().trim();
+        userRegistry.resetPortfolio(normalizedUser);
+        orderService.clearUserData(normalizedUser);
+        return ResponseEntity.ok(Map.of("status", "reset", "user", normalizedUser));
+    }
+
+
+    @PostMapping("/reset/all")
+    public ResponseEntity<Map<String, String>> resetAll() {
+        userRegistry.resetAll();
+        orderService.clearAllData();
+        return ResponseEntity.ok(Map.of("status", "all users reset"));
     }
 
     private ResponseEntity<Map<String, String>> badRequest(String msg) {

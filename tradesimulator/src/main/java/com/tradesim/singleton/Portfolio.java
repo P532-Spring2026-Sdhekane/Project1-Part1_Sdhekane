@@ -1,25 +1,19 @@
 package com.tradesim.singleton;
 
-import org.springframework.stereotype.Component;
-
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 
-@Component
 public class Portfolio {
 
     private static final double INITIAL_CASH = 10_000.00;
 
     private double cash;
-    private final Map<String, Integer> holdings; // ticker -> shares owned
+    private final Map<String, Integer> holdings = new HashMap<>();
 
     public Portfolio() {
         this.cash = INITIAL_CASH;
-        this.holdings = new HashMap<>();
     }
-
-  
 
     public double getCash() { return cash; }
 
@@ -32,7 +26,6 @@ public class Portfolio {
         cash += amount;
     }
 
-  
 
     public Map<String, Integer> getHoldings() {
         return Collections.unmodifiableMap(holdings);
@@ -54,7 +47,6 @@ public class Portfolio {
         else holdings.put(ticker, remaining);
     }
 
-  
 
     public double getTotalValue(Map<String, Double> prices) {
         double stockValue = holdings.entrySet().stream()
@@ -62,7 +54,6 @@ public class Portfolio {
                 .sum();
         return cash + stockValue;
     }
-
 
 
     public void reset() {
